@@ -1,0 +1,391 @@
+color_clusters <- c("#56ff0d", "#1965B0", "#7BAFDE", "#DC050C", "#882E72","#FF7F00", "#B17BA6", "#E7298A","#FDB462",  "#E78AC3","#0a0d05", "#B2DF8A", "#55A1B1", "#8DD3C7", "#A6761D","#E6AB02", "#7570B3", "#BEAED4", "#666666", "#999999","#aa8282", "#d4b7b7", "#00bfff", "#ba5ce3", "#808000","#aeae5c", "#1e90ff", "darkred", "#ffff00", "#33A02C", "#8B3800", "#4E8500", "#33A02C", "#cd34b5", "#41ab5d","#addd8e","#9ebcda","#9de847", "#ceea04","#fa8775","#ea5f94",  "#ceea04","#ffd700","#000000", "#fcc5c0","#9ebcda","#9de847","#ceea04","#fa8775","#ea5f94", "#034e7b", "#9ebcda", "#af0017", "#ceea04", "#89a900", "#7db984", "#6c34e0", "#000000", "darkgrey","#ffb14e", "#0b8f55","#9d02d7", "#dd3497", "#fb9770","#aa413c", "#f768a1", "#8c6bb1", "#74a9cf", "lightgrey", "#aeae5c","#cd34b5", "#41ab5d","#addd8e","#9ebcda","#9de847","#ceea04","#fa8775","#ea5f94","#ceea04","#ffd700")  
+
+bupu <- colorRampPalette(c("skyblue4","lightblue","white", "darkmagenta","#490c35"))(n = 50)
+
+library(stringr)
+library(R.utils)
+library(ggplot2)
+library(patchwork)
+library(metacell)
+library(foreach)
+library(pheatmap)
+library(tgconfig)
+library(ggplot2)
+library(dplyr)
+library(Seurat)
+library(SingleCellExperiment)
+library(ggthemes)
+source('scTools_meta.R')
+source('scTools_plot.R')
+
+###	Loading and preprocessing
+dir.create("mc_rna/")
+scdb_init("mc_rna/", force_reinit=T)
+dir.create("mc_rna_figs/")
+scfigs_init("mc_rna_figs/")
+
+index_fn = "ald_onx02_md.txt"
+id = "ald_onx02_md"
+
+umi.tab_dir = "/home/projects/scdb_v4_mouse/output/umi.tab"
+mcell_import_multi_mars(mat_nm = "all", dataset_table_fn = index_fn, base_dir = umi.tab_dir, force = T)
+mat = scdb_mat("all")
+print(dim(mat@mat))
+mcell_plot_umis_per_cell("all",min_umis_cutoff = 300)
+nms = c(rownames(mat@mat), rownames(mat@ignore_gmat))
+
+mcell_mat_ignore_genes(new_mat_id=id, mat_id="all", bad_genes, reverse=F) 
+mcell_mat_ignore_small_cells(id, id, 300)
+set.seed(1234)
+mcell_add_gene_stat(gstat_id=id, mat_id=id, force=T)
+gstat = scdb_gstat(id)
+print(head(gstat))
+print(quantile(gstat$ds_vm_norm,c(1:20)/20))
+
+png("mc_rna_figs/hist.gstats.t_vm.png")
+hist(gstat$ds_vm_norm,breaks=c(floor(min(gstat$ds_vm_norm)*10):ceiling(max(gstat$ds_vm_norm)*10))/10,main = "Histogram of downsampled variance divided by mean")
+abline(v=0.3)
+axis(side = 1,at=0.3,labels="0.3")
+
+sce <- NULL
+sce = scm_export_mat_to_sce(id, add_log_counts=TRUE)
+sce@assays@data
+sce@assays@data$logcounts <- as.matrix(sce@assays@data$logcounts)
+sce@assays@data$counts <- as.matrix(sce@assays@data$counts)
+seurat_obj <- as.Seurat(sce, counts = "counts", data = "logcounts")
+seurat_object_backup <- seurat_obj #backup original seurat_obj
+counts <- GetAssayData(object = seurat_obj, layer = "counts")
+
+ncounts <- counts 
+nonzero <- ncounts > 0
+keep_genes <- Matrix::rowSums(nonzero) >= 3
+length(keep_genes)
+filtered_counts <- ncounts[keep_genes, ]
+seurat_object <- CreateSeuratObject(filtered_counts)
+seurat_object@meta.data$cellbarcode  <- rownames(seurat_object@meta.data)
+orig_meta.data <- seurat_obj@meta.data
+orig_meta.data$cellbarcode <- rownames(seurat_obj@meta.data)
+filt_meta.data <- merge(seurat_object@meta.data, orig_meta.data, by = "cellbarcode") 
+seurat_object@meta.data <- filt_meta.data
+countsn <- GetAssayData(object = seurat_object, layer = "counts")
+seurat_objn <- CreateSeuratObject(countsn)
+seurat_objn@meta.data <- cbind(seurat_objn@meta.data, seurat_object@meta.data[,9:length(colnames(seurat_object@meta.data))])
+
+seurat_objn[["percent.mt"]] <- PercentageFeatureSet(seurat_objn, pattern = "^mt")
+seurat_objn[["percent.rb"]] <- PercentageFeatureSet(seurat_objn, pattern = "^Rp")
+seurat_objn[["percent.hb"]] <- PercentageFeatureSet(seurat_objn, pattern = "^Hb")
+seurat_objn[["percent.ig"]] <- PercentageFeatureSet(seurat_objn, pattern = "^Ig")
+seurat_objn[["percent.mr"]] <- PercentageFeatureSet(seurat_objn, pattern = "^Mr")
+
+seurat_obj <- subset(seurat_objn, nFeature_RNA > 300 & nFeature_RNA < 19000 & percent.mt < 18 & percent.rb < 10 & percent.hb < 5 & percent.ig < 5 & percent.mr < 2 ) 
+
+counts <- GetAssayData(object = seurat_obj, slot = "counts")
+ncounts <- counts[-which(rownames(counts) %in% as.vector(mm_bad_genes)),]
+filtered_counts <- ncounts
+seurat_object_filtered <- CreateSeuratObject(filtered_counts)
+seurat_object_filtered@meta.data$cellbarcode  <- rownames(seurat_object_filtered@meta.data)
+orig_meta.data <- seurat_obj@meta.data
+orig_meta.data$cellbarcode <- rownames(seurat_obj@meta.data)
+
+filt_meta.data <- merge(seurat_object_filtered@meta.data, orig_meta.data, by = "cellbarcode") 
+nrow(filt_meta.data)
+colnames(filt_meta.data)[3] <- "nCount_RNA"
+colnames(filt_meta.data)[4] <- "nFeature_RNA"
+colnames(filt_meta.data)[5] <- "orig.ident"
+colnames(filt_meta.data)[6] <- "unfilt_nCount_RNA"
+colnames(filt_meta.data)[7] <- "unfilt_nFeature_RNA"
+seurat_object_filtered@meta.data <- filt_meta.data
+rownames(seurat_object_filtered@meta.data) <- seurat_object_filtered@meta.data$cellbarcode
+
+save(seurat_object_filtered, file="filtered_seurat_object.RData")
+saveRDS(seurat_object_filtered, file="filtered_seurat_object.rds")
+seurat_object_filtered -> s_obj
+
+s_obj <- subset(s_obj, subset = nFeature_RNA > 150 & nFeature_RNA < 18000 & nCount_RNA < 21000) #& percent.mt < 20 & percent.rb < 5 & percent.hb < 5 & percent.ig < 5 & percent.mr < 8
+s_obj <- subset(s_obj, nFeature_RNA > 300)
+
+s_obj <- NormalizeData(s_obj) 
+s_obj <- FindVariableFeatures(s_obj) 
+top500 <- head(VariableFeatures(s_obj), 500)
+plottop <- VariableFeaturePlot(s_obj)
+Top500plot <- LabelPoints(plot=plottop, points = top500, repel=T, xnudge = 0, ynudge = 0, max.overlaps = getOption("ggrepel.max.overlaps", default = 40)) 
+VariableFeaturePlot(s_obj)
+LabelPoints(plot = plot3, points = top500, repel = TRUE)
+
+all.genes <- rownames(s_obj)
+s_obj <- ScaleData(s_obj, features = all.genes)
+s_obj <- RunPCA(s_obj, features = VariableFeatures(object = s_obj))
+
+color_conditions <- c("darkgrey","#107654","#aa0094") #,"#003f4f",
+names(color_conditions) <- c("UT","ALD","ALD-ONX")
+s_obj$condition <- factor(s_obj$condition, levels = c("UT","ALD","ALD-ONX"))
+
+s_obj <- FindNeighbors(s_obj, dims = 1:50) 
+s_obj <- FindClusters(s_obj, resolution = 3)
+s_obj <- RunUMAP(s_obj, dims = 1:50)       
+                                                             
+so_umap <- DimPlot(s_obj, reduction="umap",pt.size=0.01,label.box=F,label=T,label.size=4,cols=alpha(color_clusters,0.70),shuffle=T, repel=T) & theme(axis.line = element_blank(), axis.title.x = element_blank(),axis.title.y = element_blank(),axis.text.x = element_blank(),axis.text.y = element_blank(),axis.ticks = element_blank(),legend.text = element_text( size=11, color="black"), legend.title = element_text(size=25, color="black")) 
+so_umap
+
+so_umap_cond <- DimPlot(s_obj, reduction="umap",pt.size=0.01,label.box=F,label=T,label.size=4,cols=alpha(color_clusters,0.70),split.by="condition",shuffle=T, repel=T) & theme(axis.line = element_blank(), axis.title.x = element_blank(),axis.title.y = element_blank(),axis.text.x = element_blank(),axis.text.y = element_blank(),axis.ticks = element_blank(),
+                                                                                                                                                legend.text = element_text( size=11, color="black"), legend.title = element_text(size=25, color="black")) 
+so_umap_cond + NoLegend()
+
+###	Cluster DEG
+
+s_obj_all <- FindAllMarkers(s_obj, only.pos=T, min.pct = 0.1, logfc.threshold = 0.25)
+s_obj_all %>% group_by(cluster) %>% top_n(n = 35, wt = avg_log2FC) -> s_top35
+s_obj_all %>% group_by(cluster) %>% top_n(n = 20, wt = avg_log2FC) -> s_top20
+s_obj_all %>% group_by(cluster) %>% top_n(n = 15, wt = avg_log2FC) -> s_top15
+s_obj_all %>% group_by(cluster) %>% top_n(n = 10, wt = avg_log2FC) -> s_top10
+s_obj_all %>% group_by(cluster) %>% top_n(n = 5, wt = avg_log2FC) -> s_top5
+
+s_obj_top5 <- DoHeatmap(s_obj, features = s_top5$gene, size=3.5,group.colors =color_clusters) +
+  scale_fill_gradient2(low = c("lightgrey"),mid = c("white"),high = c("darkred"), midpoint=0, guide="colourbar",aesthetics="fill") + NoLegend() # + NoLegend() c("darkred"),mid = c("black"),high = c("#ffc700")
+
+s_obj_top20 <- DoHeatmap(s_obj, features = s_top20$gene, size=3.5,group.colors =color_clusters) +
+  scale_fill_gradient2(low = c("lightgrey"),mid = c("white"),high = c("darkred"), midpoint=0, guide="colourbar",aesthetics="fill") + NoLegend() # + NoLegend() c("darkred"),mid = c("black"),high = c("#ffc700")
+
+s_obj_top35 <- DoHeatmap(s_obj, features = s_top35$gene, size=3.5,group.colors =color_clusters) +
+  scale_fill_gradient2(low = c("lightgrey"),mid = c("white"),high = c("darkred"), midpoint=0, guide="colourbar",aesthetics="fill") + NoLegend() # + NoLegend() c("darkred"),mid = c("black"),high = c("#ffc700")
+
+###	Annotation
+
+library(readxl)
+cluster_col <- read_excel("color_cluster.xlsx")
+color_cluster <- cluster_col$col
+names(color_cluster) <- cluster_col$cluster
+color_lineage <- cluster_col$col2
+names(color_lineage) <- cluster_col$lineagecluster
+cluster_anno <- read_excel("cluster_anno.xlsx")
+color_lineage[1:11] -> color_lineage
+s_obj@meta.data$new_cluster <- Idents(s_obj)
+s_obj@meta.data$seurat_umap1 <- s_obj@reductions$umap@cell.embeddings[,1]
+s_obj@meta.data$seurat_umap2 <- s_obj@reductions$umap@cell.embeddings[,2]
+mm <- match(s_obj@meta.data$new_cluster, cluster_anno$new)
+s_obj@meta.data$lineage <- cluster_anno$lineage [mm]
+head(s_obj)
+
+###	Lineage UMAP
+
+s_obj_umap <- DimPlot(s_obj, reduction = "umap", pt.size=0.05, label.box=F, label = F, label.size = 4,# split.by = "condition",shuffle=T, cols=alpha(color_lineage,0.30), repel=T) & theme(axis.title.x = element_blank(), axis.title.y = element_blank(), axis.text.x = element_blank(), axis.text.y = element_blank(), axis.line = element_blank(),  axis.ticks = element_blank(),legend.title = element_text(size=25, color="black"),strip.text = element_text(size=25)) + NoLegend() 
+s_obj_umap <- LabelClusters(s_obj_umap, id="ident", size = 4.0, repel = T, box.padding = 0.5, max.overlaps = getOption("ggrepel.max.overlaps", default = 40)) 
+s_obj_umap
+
+###	Lineage DEG & dot plot
+
+s_obj_all <- FindAllMarkers(s_obj, only.pos=T, min.pct = 0.1, logfc.threshold = 0.25)
+s_obj_all %>% group_by(cluster) %>% top_n(n = 35, wt = avg_log2FC) -> s_top35
+s_obj_all %>% group_by(cluster) %>% top_n(n = 20, wt = avg_log2FC) -> s_top20
+s_obj_all %>% group_by(cluster) %>% top_n(n = 15, wt = avg_log2FC) -> s_top15
+s_obj_all %>% group_by(cluster) %>% top_n(n = 10, wt = avg_log2FC) -> s_top10
+s_obj_all %>% group_by(cluster) %>% top_n(n = 5, wt = avg_log2FC) -> s_top5
+s_obj_top5 <- DoHeatmap(s_obj, features = s_top5$gene, size=3.5,group.colors =color_cluster) +
+  scale_fill_gradient2(low = c("lightgrey"),mid = c("white"),high = c("darkred"), midpoint=0, guide="colourbar",aesthetics="fill") + NoLegend() # + NoLegend() c("darkred"),mid = c("black"),high = c("#ffc700")
+s_obj_top20 <- DoHeatmap(s_obj, features = s_top20$gene, size=3.5,group.colors =color_cluster) +
+  scale_fill_gradient2(low = c("lightgrey"),mid = c("white"),high = c("darkred"), midpoint=0, guide="colourbar",aesthetics="fill") + NoLegend() # + NoLegend() c("darkred"),mid = c("black"),high = c("#ffc700")
+s_obj_top35 <- DoHeatmap(s_obj, features = s_top35$gene, size=3.5,group.colors =color_cluster) +
+  scale_fill_gradient2(low = c("lightgrey"),mid = c("white"),high = c("darkred"), midpoint=0, guide="colourbar",aesthetics="fill") + NoLegend() # + NoLegend() c("darkred"),mid = c("black"),high = c("#ffc700")
+
+Idents(s_obj) <- "lineage”
+lineage_deg <- DotPlot(s_obj %>% subset(condition != "UT"),  features = c(s_top5$gene), dot.scale=12,cols="RdGy",cluster.idents=F)  #,split.by="condition", "RdBu" col.min = -2,col.max = 2, 
+lineage_deg + scale_radius(limits = c(0, 100), range = c(0, 8),breaks = c(10, 25,50,100))  +   scale_colour_gradientn(colors = bupu,limits = c(-2.5, 2.5) ) +  RotatedAxis() + 
+theme(axis.title.y = element_blank(), axis.title.x = element_blank(), panel.grid.major = element_blank(), panel.grid.minor = element_blank(), 
+axis.text.y = element_text(size=12), axis.text.x = element_text(size=10, angle = 45, vjust=1.0, hjust=1),legend.text = element_text(size = 10), legend.title = element_text(size = 12)) + 
+          geom_point(mapping = aes_string(size = 'pct.exp', color = 'avg.exp'),stroke = 0.5, alpha = 0.3, shape=21, color="black")  -> lineage_deg 
+lineage_deg 
+Idents(s_obj) <- "new_cluster"
+
+###	Proteasome associated genes per lineage
+
+Idents(s_obj) <- "lineage"
+proteasome_genes_dp <- DotPlot(s_obj %>% subset(condition != "UT" & lineage %in% c("DC","Mono","Mac","T cell","Fb","Kera","Stromal","Vessel","LC","Mast","Granulocyte")),  features = c("Psmb10","Psmb9","Psmb8","Psme1","Psmb2","Psmb4","Psmb5", "Pomp","Tap1", "Tapbp”), dot.scale=12,cols="RdGy",cluster.idents=T) 
+proteasome_genes_dp + scale_radius(limits = c(0, 100), range = c(0, 10), breaks = c(0,10,30,60))  +   scale_colour_gradientn(colors = bupu , limits = c(-2.5, 2.5)) + RotatedAxis() + coord_flip() + 
+theme(axis.title.y = element_blank(), axis.title.x = element_blank(), panel.grid.major = element_blank(), panel.grid.minor = element_blank(), #panel.grid.major = element_line(linewidth = 0.3, colour = "#F1F1F1"),
+axis.text.x = element_text(size=12, angle = 45, vjust=1.0, hjust=1),legend.text = element_text(size = 10), legend.title = element_text(size = 12)) + 
+          geom_point(mapping = aes_string(size = 'pct.exp', color = 'avg.exp'),stroke = 0.5, alpha = 0.3, shape=21, color="black")  -> proteasome_genes_dp 
+proteasome_genes_dp 
+
+Idents(s_obj) <- "new_cluster"
+
+###	DC marker genes dot plot  
+  
+Idents(s_obj) <- "new_cluster”
+DC_genes_dp <- DotPlot(s_obj %>% subset(condition!="UT" & lineage %in% c("DC","LC")),  features = c("H2-D1","H2-K1","H2-Ob", "H2-M2", "H2-Eb2","Ccr7","Cd40","Cd80","Cd86","Il12b", "Relb","Stat4","Ccl5", "Irf8","Xcr1","Plet1","Il1b","Irf5","Irf4","Ccl6","Ear2","Mgl2","Cd209d","Hist1h2ao","Ccnb2", "Cdc20"), dot.scale=9,cols="RdGy",cluster.idents=T, split.by="condition" )  
+DC_genes_dp + scale_radius(limits = c(0, 100), range = c(0, 7.5), breaks = c(10,30,60,90))  +   scale_colour_gradientn(colors = bupu , limits = c(-2.8, 2.8)) + RotatedAxis() + coord_flip() + 
+theme(axis.title.y = element_blank(), axis.title.x = element_blank(), panel.grid.major = element_blank(), panel.grid.minor = element_blank(), axis.text.x = element_text(size=12, angle = 45, vjust=1.0, hjust=1),legend.text = element_text(size = 10), legend.title = element_text(size = 12)) + geom_point(mapping = aes_string(size = 'pct.exp', color = 'avg.exp'),stroke = 0.5, alpha = 0.3, shape=21, color="black") -> DC_genes_dp
+DC_genes_dp 
+Idents(s_obj) <- "new_cluster"
+
+###	Myeloid genes pheatmap 
+
+gn_mono2 <- c("Cd40", "Cd80", "Cd86", "Cxcl9","Tnf","Irf1", "Irf5", "Stat1", "Rela", "H2-D1", "Ear2","Notch1", "Nfatc2","Cd209a","Sqstm1", "H2-K1", "H2-Q6", "H2-Q7","Tnfrsf1a", "Tnfrsf1b","Tap2","Ifngr1")
+
+Idents(s_obj) <- "DC_lineage"
+AverageExpression(s_obj %>% subset(condition!="UT" & DC_lineage %in% c("Mono","MoMac", "Mac","cDC1","cDC2") ), features = gn_mono2, slot = "data", group.by =c("DC_lineage","condition")) -> mat 
+mat1 <- t(scale(t(mat$RNA)))
+mat1 <- na.omit(mat1)
+
+bupu <- colorRampPalette(c("grey","lightgrey","#EFEEEF", "white", "skyblue3","darkmagenta", "black"))(n = 20)
+bupu <- colorRampPalette(c("skyblue4","lightblue","white", "darkmagenta","#490c35"))(n = 50)
+breaks <- seq(-2.4, 2.4, length.out = 50)
+
+mat_pheatHM <- pheatmap::pheatmap(
+mat1, color = bupu, angle_col = 45, breaks = breaks, drop_levels = TRUE, fontsize_number = 12,  cluster_cols = F, cluster_rows = T, border_color = "white", fontsize = 16, fontsize_row = 11,fontsize_col = 11, cellwidth = 16, cellheight = 16, gaps_col = c(2,4,6,8), annotation_colors = annotation_colors, annotation_legend = F, legend = TRUE)
+
+###	DC Frequency
+
+library(ggthemes)
+library(WriteXLS)
+library(gtools)
+library(reshape2)
+library(gtools)
+
+theme_cust2 <-  theme(axis.text.x = element_text(size = 12, angle = 45, vjust=1.05, hjust=1, color = "black"), 
+                     axis.ticks.x = element_blank(),#element_line(size = 0.8, color = "black"),
+                     axis.ticks.y = element_line(size = 0.8, color = "black"),
+                     axis.ticks.length.x = unit(.20, "cm"),
+                     axis.ticks.length.y = unit(.20, "cm"),
+                     axis.title.x = element_blank(), 
+                     axis.text.y = element_text(size = 10, color = "black"),
+                     axis.title.y.left = element_text(size = 10, face = "plain", vjust = 2),# axis.title.y.left = element_blank(), 
+                     strip.background = element_rect(colour=NA, size = 0.8, fill = "white"),
+                     #panel.border = element_rect(colour = "black", size = 0.8),
+                     #strip.text = element_blank(), 
+                     strip.text = element_text(color = "black", size = 12, face="plain"),
+                     axis.line = element_line(size = 0.6, color = "black"),
+                     legend.title=element_blank(), 
+                     legend.key.size = unit(0.31, "cm"), 
+                     legend.key = element_rect(size = 7, fill="white", colour = NA), 
+                     legend.text = element_text(size = 8, face = "plain"),
+                     panel.border = element_blank(),
+                     plot.title = element_text(color="black", size=10, hjust = 0.5, face="bold"))
+
+s_obj@meta.data -> cellmat
+cellmat <- cellmat %>%  subset(gate %in% "CD45")
+seuratcounts <- table(cellmat$new_cluster,cellmat$mouse_id)
+seuratcounts.df <- as.data.frame.matrix(seuratcounts, header = TRUE)
+seuratprops <-  t(t(seuratcounts) / colSums(seuratcounts)) * 100
+seuratprops.df <- as.data.frame.matrix(seuratprops, header = TRUE)
+write.table(seuratprops.df, "CD45_cell_props.txt",sep="\t",row.names = T,col.names = T,quote=F)
+pdf <- melt(data.frame(cluster = rownames(seuratprops.df), seuratprops.df), id.vars = "cluster", value.name = "Frequency", variable.name = "sample_id")
+pdf$sample_id <- as.factor((gsub( "X", "", pdf$sample_id)))
+mm <- match(pdf$sample_id, cellmat$mouse_id)
+pdf$condition <- cellmat$condition[mm]
+mm <- match(pdf$cluster, cellmat$new_cluster)
+pdf$lineage <- cellmat$lineage[mm]
+
+plotIc_freq2 <- ggplot(pdf %>% dplyr::filter(lineage %in% c("DC","LC") & condition !="UT" & sample_id != "S10" & sample_id !="S11"), aes(x = cluster, y = Frequency, fill = condition)) +
+stat_summary(aes(y=Frequency, x=cluster, color=condition), fun.data = "mean_cl_boot", geom = "bar", fun = "mean", width = 0.7,alpha=0.4, position = position_dodge(width = 0.9)) + 
+geom_point(aes(x = cluster, y = Frequency, color = condition, fill = condition), alpha = 0.95, size = 1.5, stroke = 0.01, position = position_dodge(width = 0.9)) +  
+facet_grid(~cluster, scale="free_x") + ylab(expression("Frequency")) + theme_cust2 +  scale_color_manual(values = color_conditions, guide = guide_legend(ncol = 1)) + scale_fill_manual(values = color_conditions,guide = guide_legend(ncol = 1)) 
+
+plotIc_freq2  
+
+###	Phagocyte subset
+
+myeloid_sub_obj <- subset(s_obj, lineage %in% c("DC","Mac","Mono"))
+myeloid_sub_obj <- NormalizeData(myeloid_sub_obj) 
+myeloid_sub_obj <- FindVariableFeatures(myeloid_sub_obj) #, selection.method = "vst", nfeatures = 3500
+all.genes <- rownames(myeloid_sub_obj)
+rownames(myeloid_sub_obj@meta.data) <- myeloid_sub_obj@meta.data$cellbarcode
+myeloid_sub_obj <- ScaleData(myeloid_sub_obj, features = all.genes)
+myeloid_sub_obj <- RunPCA(myeloid_sub_obj, features = VariableFeatures(myeloid_sub_obj))
+myeloid_sub_obj <- FindNeighbors(myeloid_sub_obj, dims = 1:20) 
+myeloid_sub_obj <- FindClusters(myeloid_sub_obj, resolution = 3)
+myeloid_sub_obj <- RunUMAP(myeloid_sub_obj, dims = 1:20)                                                                    
+myeloid_umap <- DimPlot(myeloid_sub_obj, reduction="umap", pt.size=0.01,label.box=F,label=T,label.size=4, cols=alpha(color_clusters,0.70), shuffle=T, repel=T) & theme(axis.line = element_blank(), axis.title.x = element_blank(),axis.title.y = element_blank(),axis.text.x = element_blank(),axis.text.y = element_blank(),axis.ticks = element_blank(),legend.text = element_text( size=11, color="black"), legend.title = element_text(size=25, color="black")) 
+myeloid_umap
+
+###	MAC DC subset UMAP
+Idents(myeloid_sub_obj) <- "new_cluster"
+myeloid_umap <- DimPlot(myeloid_sub_obj, reduction="umap", pt.size=0.001,label.box=F,label=T,label.size=4, cols=alpha(color_cluster,0.70), shuffle=T, repel=T) & theme(axis.line = element_blank(), axis.title.x = element_blank(),axis.title.y = element_blank(),axis.text.x = element_blank(),axis.text.y = element_blank(),axis.ticks = element_blank(),legend.text = element_text( size=11, color="black"), legend.title = element_text(size=25, color="black")) 
+myeloid_umap
+
+###	MAC/DC DEGs
+
+myeloid_obj_all <- FindAllMarkers(myeloid_sub_obj, only.pos=T, min.pct = 0.1, logfc.threshold = 0.25)
+myeloid_obj_all %>% group_by(cluster) %>% top_n(n = 35, wt = avg_log2FC) -> myeloid_top35
+myeloid_obj_all %>% group_by(cluster) %>% top_n(n = 20, wt = avg_log2FC) -> myeloid_top20
+myeloid_obj_all %>% group_by(cluster) %>% top_n(n = 15, wt = avg_log2FC) -> myeloid_top15
+myeloid_obj_all %>% group_by(cluster) %>% top_n(n = 10, wt = avg_log2FC) -> myeloid_top10
+myeloid_obj_all %>% group_by(cluster) %>% top_n(n = 5, wt = avg_log2FC) -> myeloid_top5
+
+myeloid_obj_top5 <- DoHeatmap(myeloid_sub_obj, features = myeloid_top5$gene, size=3.5,group.colors =color_cluster) + scale_fill_gradient2(low = c("lightgrey"),mid = c("white"),high = c("darkred"), midpoint=0, guide="colourbar",aesthetics="fill") + NoLegend() # + NoLegend() c("darkred"),mid = c("black"),high = c("#ffc700")
+myeloid_obj_top20 <- DoHeatmap(myeloid_sub_obj, features = myeloid_top20$gene, size=3.5,group.colors =color_cluster) + scale_fill_gradient2(low = c("lightgrey"),mid = c("white"),high = c("darkred"), midpoint=0, guide="colourbar",aesthetics="fill") + NoLegend() # + NoLegend() c("darkred"),mid = c("black"),high = c("#ffc700")
+myeloids_obj_top35 <- DoHeatmap(myeloid_sub_obj, features = myeloid_top35$gene, size=3.5,group.colors =color_cluster) + scale_fill_gradient2(low = c("lightgrey"),mid = c("white"),high = c("darkred"), midpoint=0, guide="colourbar",aesthetics="fill") + NoLegend() # + NoLegend() c("darkred"),mid = c("black"),high = c("#ffc700")
+
+###	MAC/DC DEG dotplot
+
+myeloid_deg <- DotPlot(myeloid_sub_obj %>% subset(condition != "UT"),  features = c(myeloid_top5$gene), dot.scale=12,cols="RdGy",cluster.idents=F)  #,split.by="condition", "RdBu" col.min = -2,col.max = 2, 
+myeloid_deg + scale_radius(limits = c(0, 100), range = c(0, 8),breaks = c(10, 25,50,100))  +   scale_colour_gradientn(colors = bupu,limits = c(-2.5, 2.5) ) + RotatedAxis() + 
+theme(axis.title.y = element_blank(), axis.title.x = element_blank(), panel.grid.major = element_blank(), panel.grid.minor = element_blank(),  axis.text.y = element_text(size=12), axis.text.x = element_text(size=10, angle = 75, vjust=1.0, hjust=1),legend.text = element_text(size = 10), legend.title = element_text(size = 12)) + geom_point(mapping = aes_string(size = 'pct.exp', color = 'avg.exp'),stroke = 0.5, alpha = 0.3, shape=21, color="black")  -> myeloid_deg 
+myeloid_deg 
+
+Idents(s_obj) <- "new_cluster"
+
+
+###	MAC/DC condition UMAP
+
+plot_data <- data.frame(UMAP1 = myeloid_sub_obj_sampled@reductions$umap@cell.embeddings[,c("umap_1")], UMAP2 = myeloid_sub_obj_sampled@reductions$umap@cell.embeddings[,c("umap_2")],
+                          #Expression = feature_data,
+                          Condition = myeloid_sub_obj_sampled@meta.data$condition,
+                          cluster  = myeloid_sub_obj_sampled@meta.data$new_cluster 
+                          )
+ 
+myeloid_cond_umap <- ggplot(plot_data, aes(x = UMAP1, y = UMAP2, color = Condition)) +
+    geom_point(size = 1.5, alpha =0.4) +    
+theme(axis.line = element_blank(), axis.text = element_blank(),axis.title.x = element_blank(), axis.title.y = element_blank(), axis.text.y = element_blank(), axis.ticks = element_blank(), panel.grid.major = element_blank(),panel.grid.minor = element_blank(), strip.background = element_blank(), strip.text = element_text(color = "black", size = 20, face="plain"), panel.border = element_blank(),  legend.position = "right", legend.key.size = unit(0.31, "cm"), legend.key = element_rect(size = 15, fill="white", colour = NA), legend.text = element_text(size = 15, color = "black"), legend.title = element_text(size = 15, color = "black")) +
+scale_color_manual(values = color_conditions) + scale_fill_manual(values = color_conditions) + guides(color = guide_legend(override.aes = list(size = 3))) 
+
+myeloid_cond_umap
+myeloid_cond_umap + facet_wrap(~Condition, nrow=1)
+
+###	MAC/DC UMAP proteasome gene expression
+
+save_dir <- "myeloid_umap_plots_genes" 
+dir.create(save_dir, showWarnings = FALSE)  
+
+features <- c( "Psmb10","Psmb9","Psmb8","Psme1", "Pomp","Tap1", "Tapbp","Erap1","Fcgr1", "Il17ra","Il17rb", "Il17rc","Il17rd","Il17re","Il23r","Il12rb2","Il6","Tnf","Il1b","Il1a","Il18","Il15","Il17a","Il23a","Il12a","Il12b","Stat1","Stat3","Irf9","Irf7","Irf3", "Il17a","Il17f","Il22","Cxcl1","Cxcl2","Cxcl5","Cxcl9","Cxcl10","Cxcr5","Mmp3","Ifnk",
+"Tlr1","Tlr3","Tlr7","Tlr8","Tlr9","Fcgr1", "Dpp4", "Cd207", "Mfge8", "H2-M2", "Epcam", "Cxcl5", "Nfe2l2", "Nfkbia", "Marcksl1","Sqstm1","Pim1","Nfkbie","Nfkbib","Nfil3","Nrp2","Irf5","Gpr65","Kdm6b","Fubp1","Slc39a13","Bptf", "Sik1", "Taok1"
+                 )
+plot_list <- list()
+condition_data <- myeloid_sub_obj@meta.data$condition  
+umap_data <- myeloid_sub_obj@reductions$umap@cell.embeddings
+set.seed(123)
+min_cells_per_condition <- min(table(condition_data))
+
+sampled_cells <- condition_data %>%
+  data.frame(cell_id = rownames(myeloid_sub_obj@meta.data), condition = condition_data) %>%
+  group_by(condition) %>%
+  sample_n(min_cells_per_condition) %>%
+  pull(cell_id)
+
+myeloid_sub_obj_sampled <- subset(myeloid_sub_obj, cells = sampled_cells)
+
+for (feature in features) {
+      feature_data <- as.numeric(myeloid_sub_obj_sampled[["RNA"]]$data[feature, ])
+
+plot_data <- data.frame(UMAP1=myeloid_sub_obj_sampled@reductions$umap@cell.embeddings[,c("umap_1")],  UMAP2 = myeloid_sub_obj_sampled@reductions$umap@cell.embeddings[,c("umap_2")],
+                          Expression = feature_data,
+                          Condition = myeloid_sub_obj_sampled@meta.data$condition)
+
+plot_data <- plot_data[order(plot_data$Expression), ]
+
+  min_value <- min(plot_data$Expression, na.rm = TRUE)
+  max_value <- max(plot_data$Expression, na.rm = TRUE)
+
+ p <- ggplot(plot_data, aes(x = UMAP1, y = UMAP2, color = Expression)) +
+    geom_point(size = 1.5) +
+    scale_color_gradientn(colors = custom_colors, limits = c(min_value, max_value)) + 
+theme(axis.line = element_blank(), axis.text = element_blank(), axis.title.x = element_blank(), axis.title.y = element_blank(), axis.text.y = element_blank(), axis.ticks = element_blank(),
+          	panel.grid.major = element_blank(),element_blank(), panel.grid.minor = element_blank(),
+        	strip.background = element_blank(), strip.text = element_text(color = "black", size = 20, face="plain"),
+panel.border = element_blank(), legend.position = "right", legend.text = element_text(size = 11, color = "black"), legend.title = element_text(size = 25, color = "black")) +
+    facet_wrap(~ Condition,nrow=1) + ggtitle(feature)  
+
+  plot_list[[feature]] <- p
+
+  ggsave(filename = file.path(save_dir, paste0(feature, "_feature_condition.tiff")), p, scale = 1, width = 35, height = 10, units = "in", dpi = 600, compression="lzw")
+    
+   ggsave(filename = file.path(save_dir, paste0(feature, "_feature_condition.pdf")), p, scale = 1, width = 35, height = 10, units = "in", dpi = 600)
